@@ -12,8 +12,9 @@ data = Utils.load_data(data_dir)
 
 
 # Simple DCOPF
-println("Executing simple DCOPF...")
+println("Building simple DCOPF...\n")
 model = Optimization.build_dcopf(data)
+println("Solving simple DCOPF...\n")
 results = Optimization.solve_model(model, data)
 print(results)
 

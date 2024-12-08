@@ -18,80 +18,77 @@ export build_dcopf, solve_model
 Builds and returns a DC Optimal Power Flow (DCOPF) model using the input `data`.
 """
 function build_dcopf(data::Dict)
+    # Extract datasets from the input dictionary
     bus = data["bus"]
     branch = data["branch"]
     plant = data["plant"]
     load = data["load"]
     gencost = data["gencost"]
 
+    # Map bus IDs to indices
     bus_id_map = Dict(sort(unique(bus.bus_id)) .=> 1:length(unique(bus.bus_id)))
 
     # Define sets
-    G = sort(unique(plant.idx))         # Set of generator buses (indices)
-    D = 1:(ncol(load)-2)                # Set of demand nodes 
-    N = sort(unique(bus.idx))           # Set of all buses (indices)
-    L = sort(unique(branch.branch_id))  # Set of branches (indices)
-    T = 1:length(load.time)
+    G = sort(plant.plant_id)                                                  # Indices of power plants (several per bus)
+    D = sort([bus_id_map[parse(Int, name)] for name in names(load)[3:end]])   # Indices of demand nodes
+    N = sort(bus.idx)                                                         # Indices of all buses
+    L = sort(branch.branch_id)                                                # Indices of all branches
+    T = 1:size(load, 1)                                                       # Time indices
 
-    # Per unit base
-    baseMVA = 100
+    @assert length(G) == length(unique(plant.plant_id))
+    @assert length(N) == length(unique(bus.idx)) && length(N) >= length(D)
+    @assert length(L) == length(unique(branch.branch_id))
+    @assert first(G) == first(D) == first(N) == first(L) == 1
 
     # Create the DCOPF model
     DCOPF = Model(HiGHS.Optimizer)
 
-    # Define decision variables
+    # Define variables
     @variables(DCOPF, begin
-        GEN[G, T]                          # Generator output (assume Pmin = 0)
+        GEN[G, T]                          # Generator output
         THETA[N, T]                        # Voltage phase angle at each bus
         FLOW[L, T]                         # Power flow on each branch
     end)
 
     # Slack bus constraint: fix reference angle at the first bus
     slack_bus = N[1]
-    fix(THETA[slack_bus], 0)
+    @constraint(DCOPF, cSlack[t in T], THETA[slack_bus, t] == 0)
 
+    # Generator limits
+    pmin = Dict(plant.plant_id .=> plant.pmin)
+    pmax = Dict(plant.plant_id .=> plant.pmax)
+    @constraint(DCOPF, cGenLimits[g in G, t in T], pmin[g] <= GEN[g, t] <= pmax[g])
+
+    # Ramping constraints (limits are divided by 2 for hourly ramp)
+    ramp_limit = Dict(plant.plant_id .=> plant.ramp_30 / 2)
+    @constraint(DCOPF, cGenMax[g in G, t in T[2:end]], GEN[g, t] - GEN[g, t-1] <= ramp_limit[g])
+    @constraint(DCOPF, cGenMin[g in G, t in T[2:end]], GEN[g, t-1] - GEN[g, t] <= ramp_limit[g])
+
+    # Power balance constraint
+    #demand = Dict(D .=> [load[t, 3:end] for t in T])
+    demand = Dict(n => (n in D ? [load[t, string(bus[bus.idx .== n, :bus_id][1])] for t in T] : zeros(length(T))) for n in N)
+        # demand mapping: net power at each at each bus should either equal demand is bus in D or zero
+    start_bus = Dict(branch.branch_id .=> branch.start_idx)
+    end_bus = Dict(branch.branch_id .=> branch.end_idx)
+    @constraint(DCOPF, cBalance[n in N, t in T],
+        sum(FLOW[l, t] for l in L if start_bus[l] == n) - 
+        sum(FLOW[l, t] for l in L if end_bus[l] == n) + 
+        sum(GEN[g, t] for g in G if plant.bus_idx[g] == n) == demand[n][t])
+
+    # Power flow constraints on lines (set x very large to virtually close a line)
+    x = Dict(branch.branch_id .=> branch.x)
+    @constraint(DCOPF, cLineFlow[l in L, t in T],
+        FLOW[l, t] == (THETA[start_bus[l], t] - THETA[end_bus[l], t]) / x[l])  # SHOULD WE ADD baseMVA ???
+    
     # Objective function: minimize generation cost
+    costs = Dict(gencost.plant_id .=> zip(gencost.c2, gencost.c1, gencost.c0))
     @objective(DCOPF, Min, 
-        sum(
-            gencost[gencost.plant_id .== g, :c2][1] * GEN[g]^2 +
-            gencost[gencost.plant_id .== g, :c1][1] * GEN[g] +
-            gencost[gencost.plant_id .== g, :c0][1] 
-            for g in G
-        )
-    )
+    sum(sum(costs[g][1] * GEN[g,t]^2 +
+            costs[g][2] * GEN[g,t] +
+            costs[g][3]
+            for t in T)
+        for g in G))
     
-    # WIP ---- Power balance constraint at each bus
-    @constraint(DCOPF, cBalance[n in N], 
-        sum(GEN[g] for g in G if plant.idx[g] == n) +                               # Generation at bus n
-        sum(load[Symbol(string(n))] for n in names(load) if parse(Int, n) == n) ==  # Load at bus n
-        sum(FLOW[l] for l in L if branch.start_idx[l] == n) -                       # Outgoing flows
-        sum(FLOW[l] for l in L if branch.end_idx[l] == n)                           # Incoming flows
-    )
-
-    # Maximum generation constraint for each generator
-    @constraint(DCOPF, cMaxGen[g in G], 
-        GEN[g] <= plant[plant.idx .== g, :pgmax][1]
-    )
-
-    # OK ---- Generator limit constraints
-    @constraint(DCOPF, cMinGen[g in G, t in T], GEN[g,t] >= plant[plant.idx .== g, :pmin][1])
-    @constraint(DCOPF, cMaxGen[g in G, t in T], GEN[g,t] <= plant[plant.idx .== g, :pmax][1])
-    
-    # OK ---- Ramping constraints (divide by 2 for hourly ramp)
-    @constraint(DCOPF, ramp_up[g in G, t in 2:T], P[g,t] - P[g,t-1] <= plant[plant.idx .== g, :ramp_30][1] / 2)
-    @constraint(DCOPF, ramp_down[g in G, t in 2:T], P[g,t-1] - P[g,t] <= plant[plant.idx .== g, :ramp_30][1] / 2)
-
-    # Line flow constraints based on susceptance
-    @constraint(DCOPF, cLineFlows[l in L], 
-        FLOW[l] == baseMVA * branch.sus[l] * 
-                   (THETA[branch.start_idx[l]] - THETA[branch.end_idx[l]])
-    )
-
-    # Maximum line flow constraints
-    @constraint(DCOPF, cLineLimits[l in L], 
-        abs(FLOW[l]) <= branch.capacity[l]
-    )
-
     return DCOPF
 end
 

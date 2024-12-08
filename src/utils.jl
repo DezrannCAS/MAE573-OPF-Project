@@ -17,6 +17,9 @@ function load_data(data_dir::String; verbose::Bool = true)
     load = CSV.read(joinpath(data_dir, "load.csv"), DataFrame)
     gencost = CSV.read(joinpath(data_dir, "gencost.csv"), DataFrame)
     
+    # Shrink temporal resolution to only 100 datapoints instead of 8784
+    load = first(load, 100)
+
     # Rename columns
     for f in [plant, gencost, branch, bus]
         rename!(f,lowercase.(names(f)))
@@ -43,7 +46,7 @@ function load_data(data_dir::String; verbose::Bool = true)
     # Add new identifiers (idx always refers to a bus index ranging from 1 to N)
     bus_id_map = Dict(sort(unique(bus.bus_id)) .=> 1:length(unique(bus.bus_id)))
     bus[!, :idx] = [bus_id_map[id] for id in bus.bus_id]
-    plant[!, :idx] = [bus_id_map[id] for id in plant.bus_id]
+    plant[!, :bus_idx] = [bus_id_map[id] for id in plant.bus_id]
     branch[!, :start_idx] = [bus_id_map[id] for id in branch.start_bus]
     branch[!, :end_idx] = [bus_id_map[id] for id in branch.end_bus]
     
