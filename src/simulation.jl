@@ -6,27 +6,59 @@ module Simulation
 
 export generate_batches, generate_scenarios, evaluate
 
+using Random
 
 """
-Generate scenarios, with variability on demand (between 0 and 1) and probability of link failure
+    generate_scenarios(data::Dict, num_scenarios::Int, demand_variability::Float64, line_failure_prob::Float64)
+
+Generates a set of scenarios with variability in demand and potential line failures.
+
+# Arguments
+- `data::Dict`: The original system data containing bus, branch, plant, load, etc.
+- `num_scenarios::Int`: Number of scenarios to generate.
+- `demand_variability::Float64`: Fractional variability in demand (e.g., 0.1 for ±10% variability).
+- `line_failure_prob::Float64`: Probability of a transmission line failure.
+
+# Returns
+A vector of scenario dictionaries, where each dictionary contains modified `load` and `branch` data.
 """
-function generate_scenarios(data::Dict, num_scenarios::Int, variability::Float64, prob_failure::Float64)
-    scenarios = []
-    for _ in 1:num_scenarios
+function generate_scenarios(data::Dict, num_scenarios::Int, demand_variability::Float64, line_failure_prob::Float64)
+    # Unpack original data
+    bus = data["bus"]
+    branch = data["branch"]
+    load = data["load"]
+
+    # Precompute static data
+    num_lines = size(branch, 1)
+    num_time_steps = size(load, 1)
+
+    scenarios = Vector{Dict}(undef, num_scenarios)
+
+    for s in 1:num_scenarios
         scenario_data = deepcopy(data)
 
-        # Randomly vary demand
-        for row in eachrow(scenario_data[:load])
-            row[:demand] *= 1.0 + variability * (rand() - 0.5)
+        # Add variability to demand
+        modified_load = deepcopy(load)
+        for t in 1:num_time_steps
+            for col in 3:ncol(load)  # columns 3:end are loads at different demand nodes
+                demand_value = load[t, col]
+                variability = demand_variability * demand_value
+                modified_load[t, col] = demand_value + rand(-variability:0.01:variability)
+            end
         end
+        scenario_data["load"] = modified_load
 
-        # Randomly disable links
-        if rand() < prob_failure
-            link_id = rand(1:nrow(scenario_data[:branch]))
-            scenario_data[:branch][link_id, :flow] = 0.0  # TODO: fix this -> increase conductance instead
+        # Simulate line failures
+        modified_branch = deepcopy(branch)
+        for l in 1:num_lines
+            if rand() < line_failure_prob
+                modified_branch[l, :x] = 1e6  # Set x to a very high value to simulate failure
+            end
         end
+        scenario_data["branch"] = modified_branch
 
-        push!(scenarios, scenario_data)
+        # Store the scenario
+        scenarios[s] = scenario_data
     end
 
     return scenarios

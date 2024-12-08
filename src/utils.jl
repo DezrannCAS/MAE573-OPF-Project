@@ -8,7 +8,7 @@ using CSV, DataFrames, Plots
 
 Loads data and returns a dictionary containing bus, branch, plant, load and gencost.
 """
-function load_data(data_dir::String; verbose::Bool = true)
+function load_data(data_dir::String; verbose::Bool = true, shrink::Bool = false)
     # Load aggregated dataset
     println("Loading data from $data_dir...")
     bus = CSV.read(joinpath(data_dir, "bus.csv"), DataFrame)
@@ -17,8 +17,9 @@ function load_data(data_dir::String; verbose::Bool = true)
     load = CSV.read(joinpath(data_dir, "load.csv"), DataFrame)
     gencost = CSV.read(joinpath(data_dir, "gencost.csv"), DataFrame)
     
-    # Shrink temporal resolution to only 100 datapoints instead of 8784
-    load = first(load, 100)
+    if shrink
+        load = first(load, 10)
+    end
 
     # Rename columns
     for f in [plant, gencost, branch, bus]

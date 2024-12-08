@@ -12,9 +12,15 @@ data = Utils.load_data(data_dir)
 
 
 # Simple DCOPF
-println("Building simple DCOPF...\n")
-model = Optimization.build_dcopf(data)
-println("Solving simple DCOPF...\n")
+# println("Building simple DCOPF...\n")
+# model = Optimization.build_dcopf(data)
+# println("Solving simple DCOPF...\n")
+# results = Optimization.solve_model(model, data)
+# print(results)
+
+# Stochastic DCOPF
+println("Building stochastic DCOPF...\n")
+model = Optimization.build_stochastic_dcopf(data, scenarios, probabilities)
+println("Solving stochastic DCOPF...\n")
 results = Optimization.solve_model(model, data)
 print(results)
-
