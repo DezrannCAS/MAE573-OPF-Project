@@ -1,4 +1,4 @@
-start_idx,end_idx,harmonic_mean_x,sum_ratea
+start_idx,end_idx,x,ratea
 1,11,0.006118797029189614,2488.0
 7,1,0.12179,176.4
 2,8,0.0031206517139229792,2207.0

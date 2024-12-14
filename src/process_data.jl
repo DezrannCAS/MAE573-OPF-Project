@@ -34,8 +34,8 @@ branch.branch_id = 1:nrow(branch)
 
 # Aggregate all branches together 
 aggregated_branch = combine(groupby(branch[:, [:start_idx, :end_idx, :x, :ratea]], [:start_idx, :end_idx]),
-    :x => (x -> 1 / sum(1 ./ x)) => :harmonic_mean_x,
-    :ratea => sum => :sum_ratea
+    :x => (x -> 1 / sum(1 ./ x)) => :x,
+    :ratea => sum => :ratea
 )
 
 
