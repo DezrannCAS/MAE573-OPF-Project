@@ -5,6 +5,7 @@ include("utils.jl")
 
 using .Utils
 using .Optimization
+using .Simulation
 
 # Load data 
 data_dir = "/home/esteban_nb/dirhw/mae573-term-project/data"
@@ -19,8 +20,10 @@ data = Utils.load_data(data_dir)
 # print(results)
 
 # Stochastic DCOPF
-println("Building stochastic DCOPF...\n")
-model = Optimization.build_stochastic_dcopf(data, scenarios, probabilities)
-println("Solving stochastic DCOPF...\n")
-results = Optimization.solve_model(model, data)
-print(results)
+
+num_scenarios = 50
+scenarios = generate_scenarios(data, num_scenarios, 0.1, 0.1)
+probabilities = fill(1/num_scenarios, num_scenarios)
+
+println("Performing stochastic DCOPF...\n")
+model = Optimization.perform_stochastic_dcopf(data, scenarios, probabilities)

@@ -6,7 +6,8 @@ module Simulation
 
 export generate_batches, generate_scenarios, evaluate
 
-using Random
+using Random, DataFrames
+
 
 """
     generate_scenarios(data::Dict, num_scenarios::Int, demand_variability::Float64, line_failure_prob::Float64)
