@@ -4,11 +4,11 @@
 # - Implement the heuristic methods
 
 
-module Optimization
+module DCOPF
 
 using JuMP, Gurobi, DataFrames, Statistics  # not HiGHS
 
-export perform_dcopf, perform_stochastic_dcopf
+export perform_optimization
 
 
 """
@@ -16,7 +16,7 @@ export perform_dcopf, perform_stochastic_dcopf
 
 Builds and returns a DC Optimal Power Flow (DCOPF) model using the input `data`.
 """
-function perform_dcopf(data::Dict)
+function perform_optimization(data::Dict)
     # Extract datasets from the input dictionary
     bus = data["bus"]
     branch = data["branch"]
@@ -51,7 +51,7 @@ function perform_dcopf(data::Dict)
     @assert length(G) == length(unique(plant.plant_id))
     @assert length(N) == length(unique(bus.idx)) && length(N) >= length(D)
     @assert length(L) == length(unique(branch.branch_id))
-    @assert first(G) == first(D) == first(N) == first(L) == 1
+    # @assert first(G) == first(D) == first(N) == first(L) == 1
 
     # Create the DCOPF model
     #DCOPF = Model(HiGHS.Optimizer)
@@ -96,13 +96,16 @@ function perform_dcopf(data::Dict)
     
     # Objective function: minimize generation cost
     costs = Dict(gencost.plant_id .=> zip(gencost.c2, gencost.c1, gencost.c0))
-    @objective(DCOPF, Min, 
-    sum(sum(costs[g][1] * GEN[g,t]^2 +  # Exclude quadratic terms with HiGHS!
-            costs[g][2] * GEN[g,t] +
-            costs[g][3]
-            for t in T)
+    # @objective(DCOPF, Min, 
+    # sum(sum(costs[g][1] * GEN[g,t]^2 +  # Exclude quadratic terms with HiGHS!
+    #         costs[g][2] * GEN[g,t] +
+    #         costs[g][3]
+    #         for t in T)
+    #     for g in G))
+    @objective(DCOPF, Min,
+    sum(sum(costs[g][2] * GEN[g,t] for t in T)
         for g in G))
-    
+
     optimize!(DCOPF)
     
     # Check solver status
@@ -149,251 +152,5 @@ function perform_dcopf(data::Dict)
         status = status
     )
 end
-
-
-"""
-    perform_stochastic_dcopf(data::Dict, scenarios::Vector{Dict}, probabilities::Vector{Float64})
-
-Builds and returns a stochastic DC Optimal Power Flow (DCOPF) model considering multiple scenarios
-with their associated probabilities.
-
-# Arguments
-- `data::Dict`: Base system data (as in the deterministic model).
-- `scenarios::Vector{Dict}`: List of scenario-specific data dictionaries, 
-  each containing potential variations in parameters like `load` or `branch`.
-- `probabilities::Vector{Float64}`: Probability of occurrence for each scenario.
-
-# Returns
-A JuMP Model for stochastic DCOPF.
-"""
-function perform_stochastic_dcopf_v0(data::Dict, scenarios::Vector{Dict}, probabilities::Vector{Float64})
-    @assert length(scenarios) == length(probabilities) "Mismatch between scenarios and probabilities"
-    @assert sum(probabilities) ≈ 1.0 "Probabilities must sum to 1"
-
-    # Extract datasets from the input dictionary
-    bus = data["bus"]
-    branch = data["branch"]
-    plant = data["plant"]
-    gencost = data["gencost"]
-
-    # Map bus IDs to indices
-    bus_id_map = Dict(sort(unique(bus.bus_id)) .=> 1:length(unique(bus.bus_id)))
-
-    # Define sets
-    G = sort(plant.plant_id)                                                  # Indices of power plants (several per bus)
-    N = sort(bus.idx)                                                         # Indices of all buses
-    L = sort(branch.branch_id)                                                # Indices of all branches
-    T = 1:size(data["load"], 1)                                               # Time indices
-    S = 1:length(scenarios)                                                   # Scenario indices
-
-    @assert length(G) == length(unique(plant.plant_id))
-    @assert length(N) == length(unique(bus.idx))
-    @assert length(L) == length(unique(branch.branch_id))
-    @assert first(G) == first(N) == first(L) == 1
-
-    # Create the stochastic DCOPF model
-    StochasticDCOPF = Model(Gurobi.Optimizer)
-
-    # Define variables
-    @variables(StochasticDCOPF, begin
-        GEN[G, T, S]                      # Generator output for each scenario
-        THETA[N, T, S]                    # Voltage phase angle at each bus for each scenario
-        FLOW[L, T, S]                     # Power flow on each branch for each scenario
-    end)
-
-    # Slack bus constraint: fix reference angle at the first bus in each scenario
-    slack_bus = N[1]
-    @constraint(StochasticDCOPF, cSlack[t in T, s in S], THETA[slack_bus, t, s] == 0)
-
-    # Generator limits
-    pmin = Dict(plant.plant_id .=> plant.pmin)
-    pmax = Dict(plant.plant_id .=> plant.pmax)
-    @constraint(StochasticDCOPF, cGenLimits[g in G, t in T, s in S], pmin[g] <= GEN[g, t, s] <= pmax[g])
-
-    # Ramping constraints (limits are divided by 2 for hourly ramp)
-    ramp_limit = Dict(plant.plant_id .=> plant.ramp_30 / 2)
-    @constraint(StochasticDCOPF, cGenMax[g in G, t in T[2:end], s in S], GEN[g, t, s] - GEN[g, t-1, s] <= ramp_limit[g])
-    @constraint(StochasticDCOPF, cGenMin[g in G, t in T[2:end], s in S], GEN[g, t-1, s] - GEN[g, t, s] <= ramp_limit[g])
-
-    # Power balance constraint for each scenario
-    start_bus = Dict(branch.branch_id .=> branch.start_idx)
-    end_bus = Dict(branch.branch_id .=> branch.end_idx)
-
-    for (s, prob) in zip(S, probabilities)
-        scenario = scenarios[s]
-        scenario_load = scenario["load"]
-        demand = Dict(n => (n in N ? [scenario_load[t, string(bus[bus.idx .== n, :bus_id][1])] for t in T] : zeros(length(T))) for n in N)
-
-        @constraint(StochasticDCOPF, [n in N, t in T],
-            sum(FLOW[l, t, s] for l in L if start_bus[l] == n) - 
-            sum(FLOW[l, t, s] for l in L if end_bus[l] == n) + 
-            sum(GEN[g, t, s] for g in G if plant.bus_idx[g] == n) == demand[n][t])
-    end
-
-    # Power flow constraints on lines for each scenario
-    x = Dict(branch.branch_id .=> branch.x)
-    @constraint(StochasticDCOPF, cLineFlow[l in L, t in T, s in S],
-        FLOW[l, t, s] == (THETA[start_bus[l], t, s] - THETA[end_bus[l], t, s]) / x[l])
-
-    # Objective function: minimize expected generation cost across scenarios
-    costs = Dict(gencost.plant_id .=> zip(gencost.c2, gencost.c1, gencost.c0))
-    @objective(StochasticDCOPF, Min, 
-        sum(probabilities[s] * 
-            sum(sum(costs[g][1] * GEN[g, t, s]^2 +
-                    costs[g][2] * GEN[g, t, s] +
-                    costs[g][3]
-                    for t in T)
-                for g in G)
-            for s in S))
-
-    return StochasticDCOPF
-end
-
-
-"""
-    perform_stochastic_dcopf(data::Dict, scenarios::Vector{Dict}, probabilities::Vector{Float64})
-
-Builds and solves a stochastic DC Optimal Power Flow (DCOPF) model that minimizes the expected cost over multiple scenarios.
-
-# Arguments
-- `data::Dict`: Base system data containing bus, branch, plant, load, etc.
-- `scenarios::Vector{Dict}`: A vector of scenario dictionaries with modified `load` and `branch` data.
-- `probabilities::Vector{Float64}`: Probabilities associated with each scenario.
-
-# Returns
-A dictionary containing generation, angles, flows, prices, and the expected cost.
-"""
-function perform_stochastic_dcopf(data::Dict, scenarios::Vector{Dict}, probabilities::Vector{Float64})
-    # Ensure probabilities sum to 1
-    println("Hey!")
-
-    @assert sum(probabilities) ≈ 1.0 "Probabilities must sum to 1.0"
-    num_scenarios = length(scenarios)
-
-    # Extract static data from the base system
-    bus = data["bus"]
-    branch = data["branch"]
-    plant = data["plant"]
-    gencost = data["gencost"]
-
-    println("Hey!")
-
-    # Map bus IDs to indices
-    bus_id_map = Dict(sort(unique(bus.bus_id)) .=> 1:length(unique(bus.bus_id)))
-
-    # Define sets
-    G = sort(plant.plant_id)                                                  # Indices of power plants (several per bus)
-    D = sort([bus_id_map[parse(Int, name)] for name in names(load)[3:end]])   # Indices of demand nodes
-    N = sort(bus.idx)                                                         # Indices of all buses
-    L = sort(branch.branch_id)                                                # Indices of all branches
-    T = 1:size(data["load"], 1)                                               # Time indices
-    S = 1:num_scenarios                                                       # Scenario indices
-
-    # Initialize the stochastic DCOPF model
-    DCOPF = Model(Gurobi.Optimizer)
-
-    # Define decision variables indexed by scenario
-    @variables(DCOPF, begin
-        GEN[g in G, t in T, s in S]                     # Generator output
-        THETA[n in N, t in T, s in S]                   # Voltage phase angle at each bus
-        FLOW[l in 1:size(branch, 1), t in T, s in S]    # Power flow on each branch
-    end)
-
-    println("Hey! 1.")
-
-    # Slack bus constraint: fix reference angle at the slack bus
-    slack_bus = N[1]
-    @constraint(DCOPF, cSlack[t in T, s in S], THETA[slack_bus, t, s] == 0)
-
-    # Generator limits
-    pmin = Dict(plant.plant_id .=> plant.pmin)
-    pmax = Dict(plant.plant_id .=> plant.pmax)
-    @constraint(DCOPF, cGenLimits[g in G, t in T, s in S], pmin[g] <= GEN[g, t, s] <= pmax[g])
-
-    println("Hey! 2.")
-
-    # Ramping constraints (across time for each scenario)
-    ramp_limit = Dict(plant.plant_id .=> plant.ramp_30 / 2)
-    @constraint(DCOPF, cGenRampUp[g in G, t in T[2:end], s in S], GEN[g, t, s] - GEN[g, t-1, s] <= ramp_limit[g])
-    @constraint(DCOPF, cGenRampDown[g in G, t in T[2:end], s in S], GEN[g, t-1, s] - GEN[g, t, s] <= ramp_limit[g])
-    
-    println("Hey! 3.")
-
-    # Power balance and power flow constraints for each scenario
-    for s in S
-        # Extract scenario-specific data
-        scenario_load = scenarios[s]["load"]
-        scenario_branch = scenarios[s]["branch"]
-
-        # Map branch IDs to indices
-        start_bus = Dict(scenario_branch.branch_id .=> bus_id_map[scenario_branch.start_idx])
-        end_bus = Dict(scenario_branch.branch_id .=> bus_id_map[scenario_branch.end_idx])
-        x = Dict(scenario_branch.branch_id .=> scenario_branch.x)
-        
-        println("bus_id_map: ", bus_id_map)
-        println("N: ", N)
-        println("Missing keys in bus_id_map: ", filter(n -> !haskey(bus_id_map, n), N))
-
-        # Demand at each bus (time-dependent)
-        # Demand dictionary construction
-        demand = Dict(n => 
-            (n in keys(bus_id_map) ? [scenario_load[t, bus_id_map[n]] for t in T] : zeros(length(T)))
-            for n in N)
-
-        # Power balance constraints
-        for n in N, t in T
-            @constraint(DCOPF,
-                sum(FLOW[l, t, s] for l in scenario_branch.branch_id if start_bus[l] == n) -
-                sum(FLOW[l, t, s] for l in scenario_branch.branch_id if end_bus[l] == n) +
-                sum(GEN[g, t, s] for g in G if bus_id_map[plant.bus_idx[g]] == n) ==
-                demand[n][t]
-            )
-        end
-
-        # Power flow constraints on lines
-        for l in scenario_branch.branch_id, t in T
-            @constraint(DCOPF, FLOW[l, t, s] == (THETA[start_bus[l], t, s] - THETA[end_bus[l], t, s]) / x[l])
-        end
-    end
-
-    println("Hey! 4.")
-
-    # Objective function: minimize expected cost
-    costs = Dict(gencost.plant_id .=> zip(gencost.c2, gencost.c1, gencost.c0))
-    @objective(DCOPF, Min,
-        sum(probabilities[s] * sum(
-            costs[g][1] * GEN[g, t, s]^2 +
-            costs[g][2] * GEN[g, t, s] +
-            costs[g][3] for t in T, g in G
-        ) for s in S)
-    )
-
-    # Solve the optimization model
-    optimize!(DCOPF)
-
-    # Check solver status
-    status = termination_status(DCOPF)
-    if status != MOI.OPTIMAL
-        println("Model did not solve to optimality. Status: $status")
-        return status
-    else
-        println("Model solved to optimality.")
-    end
-
-    # Retrieve outputs
-    generation = Dict((g, t, s) => value(GEN[g, t, s]) for g in G, t in T, s in S)
-    angles = Dict((n, t, s) => value(THETA[n, t, s]) for n in N, t in T, s in S)
-    flows = Dict((l, t, s) => value(FLOW[l, t, s]) for l in 1:size(branch, 1), t in T, s in S)
-    expected_cost = objective_value(DCOPF)
-
-    return (
-        generation = generation,
-        angles = angles,
-        flows = flows,
-        expected_cost = expected_cost,
-        status = status
-    )
-end
-
 
 end

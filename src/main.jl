@@ -1,29 +1,56 @@
 # Load modules
 include("simulation.jl")
 include("optimization.jl")
+include("heuristics.jl")
 include("utils.jl")
 
 using .Utils
-using .Optimization
+using .DCOPF
 using .Simulation
+using .Heuristics
+using CSV, DataFrames
 
-# Load data 
+# Directories
 data_dir = "/home/esteban_nb/dirhw/mae573-term-project/data"
-data = Utils.load_data(data_dir)
+output_dir = "/home/esteban_nb/dirhw/mae573-term-project/output"
 
 
-# Simple DCOPF
-# println("Building simple DCOPF...\n")
-# model = Optimization.build_dcopf(data)
-# println("Solving simple DCOPF...\n")
-# results = Optimization.solve_model(model, data)
-# print(results)
+function load_clean_data()
+    clean_data_dir = joinpath(data_dir, "newdata")
+    
+    bus = CSV.read(joinpath(clean_data_dir, "bus.csv"), DataFrame)
+    branch = CSV.read(joinpath(clean_data_dir, "branch.csv"), DataFrame)
+    plant = CSV.read(joinpath(clean_data_dir, "plant.csv"), DataFrame)
+    load = CSV.read(joinpath(clean_data_dir, "load.csv"), DataFrame)
+    gencost = CSV.read(joinpath(clean_data_dir, "gencost.csv"), DataFrame)
 
-# Stochastic DCOPF
+    return Dict(
+        "bus" => bus,
+        "branch" => branch,
+        "plant" => plant,
+        "load" => load,
+        "gencost" => gencost
+    )
+end
 
-num_scenarios = 50
-scenarios = generate_scenarios(data, num_scenarios, 0.1, 0.1)
-probabilities = fill(1/num_scenarios, num_scenarios)
+# --------- Criticality assessment ---------
 
-println("Performing stochastic DCOPF...\n")
-model = Optimization.perform_stochastic_dcopf(data, scenarios, probabilities)
+clean_data = load_clean_data()
+
+results = Heuristics.assess_criticality(clean_data)
+
+sorted_results = sort(results_df, :cost_after_removal)
+
+output_file = joinpath(output_dir, "sorted_results.csv")
+CSV.write(output_file, sorted_results)[1]
+println("CSV file successfully saved at: $output_file")
+
+plot(sorted_results.line, sorted_results.cost_after_removal, 
+     xlabel="Branch Line", ylabel="Cost After Removal", 
+     title="Criticality of Nodes", 
+     label="Cost After Removal", 
+     marker=:circle, 
+     legend=:topright)
+fig_path = joinpath(output_dir, "fig/criticality_plot.png")
+savefig(fig_path)
+println("Plot successfully saved at: $fig_path")

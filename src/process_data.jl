@@ -30,14 +30,13 @@ branch[!, :end_idx] = [bus_id_map[id] for id in branch.end_bus]
 plant_id_map = Dict(plant.plant_id .=> 1:nrow(plant))
 plant.plant_id = 1:nrow(plant)
 gencost[!, :plant_id] = [plant_id_map[id] for id in gencost.plant_id]
-branch.branch_id = 1:nrow(branch)
 
 # Aggregate all branches together 
 aggregated_branch = combine(groupby(branch[:, [:start_idx, :end_idx, :x, :ratea]], [:start_idx, :end_idx]),
     :x => (x -> 1 / sum(1 ./ x)) => :x,
     :ratea => sum => :ratea
 )
-
+aggregated_branch.branch_id = 1:nrow(aggregated_branch)
 
 CSV.write(joinpath(clean_data_dir, "bus.csv"), bus)
 CSV.write(joinpath(clean_data_dir, "branch.csv"), aggregated_branch)
